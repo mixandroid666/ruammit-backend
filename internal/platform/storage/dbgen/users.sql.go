@@ -50,6 +50,43 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateU
 	return i, err
 }
 
+const getProfile = `-- name: GetProfile :one
+SELECT id, email, phone, display_name, avatar_url, bio, gender, birth_date, status, created_at
+FROM users
+WHERE id = $1
+`
+
+type GetProfileRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Email       *string            `json:"email"`
+	Phone       *string            `json:"phone"`
+	DisplayName *string            `json:"display_name"`
+	AvatarUrl   *string            `json:"avatar_url"`
+	Bio         *string            `json:"bio"`
+	Gender      *string            `json:"gender"`
+	BirthDate   pgtype.Date        `json:"birth_date"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) GetProfile(ctx context.Context, id pgtype.UUID) (GetProfileRow, error) {
+	row := q.db.QueryRow(ctx, getProfile, id)
+	var i GetProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Phone,
+		&i.DisplayName,
+		&i.AvatarUrl,
+		&i.Bio,
+		&i.Gender,
+		&i.BirthDate,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT id, email, password_hash, display_name, avatar_url, bio, gender, birth_date, created_at
 FROM users
@@ -113,6 +150,67 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDR
 		&i.Bio,
 		&i.Gender,
 		&i.BirthDate,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateProfile = `-- name: UpdateProfile :one
+UPDATE users SET
+    display_name = COALESCE($1, display_name),
+    birth_date   = COALESCE($2,   birth_date),
+    gender       = COALESCE($3,       gender),
+    bio          = COALESCE($4,          bio),
+    avatar_url   = COALESCE($5,   avatar_url),
+    updated_at   = now()
+WHERE id = $6
+RETURNING id, email, phone, display_name, avatar_url, bio, gender, birth_date, status, created_at
+`
+
+type UpdateProfileParams struct {
+	DisplayName *string     `json:"display_name"`
+	BirthDate   pgtype.Date `json:"birth_date"`
+	Gender      *string     `json:"gender"`
+	Bio         *string     `json:"bio"`
+	AvatarUrl   *string     `json:"avatar_url"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+type UpdateProfileRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Email       *string            `json:"email"`
+	Phone       *string            `json:"phone"`
+	DisplayName *string            `json:"display_name"`
+	AvatarUrl   *string            `json:"avatar_url"`
+	Bio         *string            `json:"bio"`
+	Gender      *string            `json:"gender"`
+	BirthDate   pgtype.Date        `json:"birth_date"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// Partial profile update: each field is left unchanged when its arg is null
+// (COALESCE), so this serves both first-time setup and later edits.
+func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (UpdateProfileRow, error) {
+	row := q.db.QueryRow(ctx, updateProfile,
+		arg.DisplayName,
+		arg.BirthDate,
+		arg.Gender,
+		arg.Bio,
+		arg.AvatarUrl,
+		arg.ID,
+	)
+	var i UpdateProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Phone,
+		&i.DisplayName,
+		&i.AvatarUrl,
+		&i.Bio,
+		&i.Gender,
+		&i.BirthDate,
+		&i.Status,
 		&i.CreatedAt,
 	)
 	return i, err

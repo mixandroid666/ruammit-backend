@@ -1,7 +1,7 @@
 # Ruammit backend — common dev tasks.
 # Note: targets shell out to docker/sqlc/migrate; install those as needed.
 
-.PHONY: help run worker build test vet tidy up down logs migrate-up migrate-down sqlc
+.PHONY: help run worker build test vet tidy up down logs migrate-up migrate-down sqlc seed
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
@@ -45,3 +45,6 @@ migrate-down: ## Roll back one migration
 
 sqlc: ## Generate type-safe DB code (requires sqlc)
 	sqlc generate
+
+seed: ## Load demo feed data (idempotent; requires psql + a migrated DB)
+	psql "$(DATABASE_URL)" -f db/seed/0001_demo_feed.sql

@@ -163,22 +163,24 @@ type VerifyInput struct {
 	Code    string
 }
 
-// VerifyOTP checks the code and, on success, activates the account.
+// VerifyOTP checks the code and, on success, activates the account and logs the
+// user in by issuing a token pair (so they can proceed straight to profile
+// setup without re-authenticating).
 //
 // Note: a wrong code increments the attempt counter in its own statement (not
 // rolled back), while the success path activates the user atomically.
-func (s *Service) VerifyOTP(ctx context.Context, in VerifyInput) error {
+func (s *Service) VerifyOTP(ctx context.Context, in VerifyInput) (*TokenPair, error) {
 	q := s.db.Queries
 
 	userID, status, err := s.findUser(ctx, q, in.Type, in.Contact)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNoPending
+			return nil, ErrNoPending
 		}
-		return err
+		return nil, err
 	}
 	if status == statusActive {
-		return ErrAlreadyVerified
+		return nil, ErrAlreadyVerified
 	}
 
 	otp, err := q.GetLatestOTP(ctx, dbgen.GetLatestOTPParams{
@@ -186,29 +188,42 @@ func (s *Service) VerifyOTP(ctx context.Context, in VerifyInput) error {
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNoPending
+			return nil, ErrNoPending
 		}
-		return err
+		return nil, err
 	}
 	if time.Now().After(otp.ExpiresAt.Time) {
-		return ErrCodeExpired
+		return nil, ErrCodeExpired
 	}
 	if otp.Attempts >= maxAttempts {
-		return ErrTooManyAttempts
+		return nil, ErrTooManyAttempts
 	}
 	if !checkSecret(otp.CodeHash, in.Code) {
 		if err := q.IncrementOTPAttempts(ctx, otp.ID); err != nil {
 			s.log.Error("failed to record otp attempt", "err", err)
 		}
-		return ErrInvalidCode
+		return nil, ErrInvalidCode
 	}
 
-	return s.withTx(ctx, func(tq *dbgen.Queries) error {
+	var pair *TokenPair
+	err = s.withTx(ctx, func(tq *dbgen.Queries) error {
 		if err := tq.ConsumeOTP(ctx, otp.ID); err != nil {
 			return err
 		}
-		return tq.ActivateUser(ctx, userID)
+		if err := tq.ActivateUser(ctx, userID); err != nil {
+			return err
+		}
+		p, err := s.issueTokens(ctx, tq, userID)
+		if err != nil {
+			return err
+		}
+		pair = p
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return pair, nil
 }
 
 // ResendInput is the validated resend request.
@@ -293,13 +308,16 @@ type LoginInput struct {
 	Password string
 }
 
-// TokenPair is what login/refresh return to the client.
+// TokenPair is what login/refresh/verify return to the client.
 type TokenPair struct {
 	UserID           string
 	AccessToken      string
 	AccessExpiresAt  time.Time
 	RefreshToken     string
 	RefreshExpiresAt time.Time
+	// ProfileCompleted is false until the user finishes profile setup (sets a
+	// display name). The client routes to the setup screen while it's false.
+	ProfileCompleted bool
 }
 
 // Login verifies credentials and issues an access + refresh token pair.
@@ -417,12 +435,21 @@ func (s *Service) issueTokens(ctx context.Context, q *dbgen.Queries, userID pgty
 	}); err != nil {
 		return nil, err
 	}
+
+	// A user has completed setup once they have a display name. Read it from the
+	// same Queries (tx-bound where applicable) so verify-on-activation is correct.
+	profileCompleted := false
+	if u, err := q.GetUserByID(ctx, userID); err == nil {
+		profileCompleted = u.DisplayName != nil && *u.DisplayName != ""
+	}
+
 	return &TokenPair{
 		UserID:           uid,
 		AccessToken:      access,
 		AccessExpiresAt:  accessExp,
 		RefreshToken:     refresh,
 		RefreshExpiresAt: refreshExp,
+		ProfileCompleted: profileCompleted,
 	}, nil
 }
 

@@ -181,6 +181,166 @@ paths:
                   id: { type: string, format: uuid }
         "401": { $ref: "#/components/responses/Error" }
 
+  /api/v1/users/me:
+    get:
+      summary: Get the authenticated user's profile
+      operationId: getMyProfile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The caller's profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Update the authenticated user's profile (setup / edit)
+      description: >
+        Multipart/form-data partial update. Only the fields present are changed,
+        so this serves both first-time setup (after OTP) and later edits. Setting
+        a display_name marks the profile complete.
+      operationId: updateMyProfile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string, minLength: 2, maxLength: 50 }
+                birth_date: { type: string, example: "1995-07-14", description: YYYY-MM-DD }
+                gender: { type: string, enum: [male, female, other] }
+                bio: { type: string, maxLength: 300 }
+                avatar: { type: string, format: binary, description: JPG/PNG/WebP, ≤5 MB }
+      responses:
+        "200":
+          description: The updated profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+
+  /api/v1/posts/create:
+    post:
+      summary: Create a post (caption + media + optional location)
+      description: >
+        Multipart/form-data. A post may carry up to 8 images OR a single video
+        (not both), plus an optional caption (≤2000 chars) and location. Media
+        is stored and served under `/media/...`; the response is the created
+        post in the same shape the feed returns. Rate-limited per user.
+      operationId: createPost
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                caption: { type: string, maxLength: 2000 }
+                images:
+                  type: array
+                  maxItems: 8
+                  items: { type: string, format: binary }
+                  description: JPG/PNG/WebP, ≤5 MB each. Omit when sending a video.
+                video:
+                  type: string
+                  format: binary
+                  description: MP4/MOV, ≤50 MB. Omit when sending images.
+                latitude: { type: number }
+                longitude: { type: number }
+                location_name: { type: string }
+      responses:
+        "201":
+          description: The created post
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Post" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /api/v1/feed:
+    get:
+      summary: Home timeline (viewer + follows)
+      description: >
+        Returns a page of the viewer's home timeline. If the viewer follows no
+        one yet, the server falls back to a recent global timeline so the feed
+        is never empty; `source` reports which timeline was returned.
+      operationId: homeFeed
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: A page of timeline posts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedPage" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/feed/stories:
+    get:
+      summary: Active stories, grouped by author
+      operationId: feedStories
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Active story strip
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stories:
+                    type: array
+                    items: { $ref: "#/components/schemas/StoryAuthor" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/feed/posts/{id}/like:
+    post:
+      summary: Like a post
+      operationId: likePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Liked }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Unlike a post
+      operationId: unlikePost
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Unliked }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -209,6 +369,86 @@ components:
           type: object
           properties:
             id: { type: string, format: uuid }
+            profile_completed:
+              type: boolean
+              description: False until the user finishes profile setup.
+    Author:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        avatar_url: { type: string }
+    Post:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        author: { $ref: "#/components/schemas/Author" }
+        body: { type: string }
+        created_at: { type: string, format: date-time }
+        like_count: { type: integer }
+        comment_count: { type: integer }
+        liked_by_viewer: { type: boolean }
+        images:
+          type: array
+          items: { type: string }
+        video_url:
+          type: string
+          description: Present only when the post has a video.
+        media:
+          type: array
+          description: Typed media (returned on create; timeline reads use images/video_url).
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              type: { type: string, enum: [image, video] }
+              url: { type: string }
+              order: { type: integer }
+        location:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PostLocation"
+    FeedPage:
+      type: object
+      properties:
+        posts:
+          type: array
+          items: { $ref: "#/components/schemas/Post" }
+        source:
+          type: string
+          enum: [home, global]
+          description: Which timeline was returned (global = discovery fallback)
+        next_offset:
+          type: integer
+          nullable: true
+          description: Offset for the next page, or null on the last page
+    Profile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        phone: { type: string }
+        display_name: { type: string }
+        avatar_url: { type: string }
+        bio: { type: string }
+        gender: { type: string, enum: [male, female, other] }
+        birth_date: { type: string, nullable: true, description: YYYY-MM-DD }
+        status: { type: string }
+        profile_completed: { type: boolean }
+    PostLocation:
+      type: object
+      properties:
+        latitude: { type: number }
+        longitude: { type: number }
+        location_name: { type: string }
+    StoryAuthor:
+      type: object
+      properties:
+        author: { $ref: "#/components/schemas/Author" }
+        media_urls:
+          type: array
+          items: { type: string }
+        latest_at: { type: string, format: date-time }
     Error:
       type: object
       properties:

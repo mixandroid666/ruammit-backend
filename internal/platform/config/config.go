@@ -26,6 +26,11 @@ type Config struct {
 	S3AccessKey string
 	S3SecretKey string
 
+	// Local media storage (used until S3/MinIO upload is wired). Uploaded post
+	// images/videos are written under UploadDir and served at MediaURLPrefix.
+	UploadDir      string
+	MediaURLPrefix string
+
 	FCMCredentialsFile string
 
 	// Email OTP delivery (Resend). When ResendAPIKey is empty, the app falls
@@ -52,6 +57,9 @@ func Load() Config {
 		S3Bucket:    env("S3_BUCKET", "ruammit-media"),
 		S3AccessKey: env("S3_ACCESS_KEY", "minioadmin"),
 		S3SecretKey: env("S3_SECRET_KEY", "minioadmin"),
+
+		UploadDir:      env("UPLOAD_DIR", "./uploads"),
+		MediaURLPrefix: env("MEDIA_URL_PREFIX", "/media"),
 
 		FCMCredentialsFile: env("FCM_CREDENTIALS_FILE", ""),
 

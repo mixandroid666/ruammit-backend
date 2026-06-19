@@ -61,10 +61,12 @@ type OtpCode struct {
 }
 
 type Post struct {
-	ID        pgtype.UUID        `json:"id"`
-	AuthorID  pgtype.UUID        `json:"author_id"`
-	Body      string             `json:"body"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID          pgtype.UUID        `json:"id"`
+	AuthorID    pgtype.UUID        `json:"author_id"`
+	Body        string             `json:"body"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	MediaCount  int16              `json:"media_count"`
+	HasLocation bool               `json:"has_location"`
 }
 
 type PostImage struct {
@@ -78,6 +80,24 @@ type PostLike struct {
 	PostID    pgtype.UUID        `json:"post_id"`
 	UserID    pgtype.UUID        `json:"user_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type PostLocation struct {
+	ID           pgtype.UUID        `json:"id"`
+	PostID       pgtype.UUID        `json:"post_id"`
+	Latitude     float64            `json:"latitude"`
+	Longitude    float64            `json:"longitude"`
+	LocationName *string            `json:"location_name"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type PostMedium struct {
+	ID         pgtype.UUID        `json:"id"`
+	PostID     pgtype.UUID        `json:"post_id"`
+	MediaType  string             `json:"media_type"`
+	MediaUrl   string             `json:"media_url"`
+	MediaOrder int16              `json:"media_order"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
 type RefreshToken struct {

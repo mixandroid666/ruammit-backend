@@ -27,6 +27,70 @@ func (q *Queries) AddPostImage(ctx context.Context, arg AddPostImageParams) erro
 	return err
 }
 
+const addPostLocation = `-- name: AddPostLocation :one
+INSERT INTO post_locations (post_id, latitude, longitude, location_name)
+VALUES ($1, $2, $3, $4)
+RETURNING id, post_id, latitude, longitude, location_name, created_at
+`
+
+type AddPostLocationParams struct {
+	PostID       pgtype.UUID `json:"post_id"`
+	Latitude     float64     `json:"latitude"`
+	Longitude    float64     `json:"longitude"`
+	LocationName *string     `json:"location_name"`
+}
+
+func (q *Queries) AddPostLocation(ctx context.Context, arg AddPostLocationParams) (PostLocation, error) {
+	row := q.db.QueryRow(ctx, addPostLocation,
+		arg.PostID,
+		arg.Latitude,
+		arg.Longitude,
+		arg.LocationName,
+	)
+	var i PostLocation
+	err := row.Scan(
+		&i.ID,
+		&i.PostID,
+		&i.Latitude,
+		&i.Longitude,
+		&i.LocationName,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const addPostMedia = `-- name: AddPostMedia :one
+INSERT INTO post_media (post_id, media_type, media_url, media_order)
+VALUES ($1, $2, $3, $4)
+RETURNING id, post_id, media_type, media_url, media_order, created_at
+`
+
+type AddPostMediaParams struct {
+	PostID     pgtype.UUID `json:"post_id"`
+	MediaType  string      `json:"media_type"`
+	MediaUrl   string      `json:"media_url"`
+	MediaOrder int16       `json:"media_order"`
+}
+
+func (q *Queries) AddPostMedia(ctx context.Context, arg AddPostMediaParams) (PostMedium, error) {
+	row := q.db.QueryRow(ctx, addPostMedia,
+		arg.PostID,
+		arg.MediaType,
+		arg.MediaUrl,
+		arg.MediaOrder,
+	)
+	var i PostMedium
+	err := row.Scan(
+		&i.ID,
+		&i.PostID,
+		&i.MediaType,
+		&i.MediaUrl,
+		&i.MediaOrder,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createPost = `-- name: CreatePost :one
 INSERT INTO posts (author_id, body)
 VALUES ($1, $2)
@@ -38,9 +102,57 @@ type CreatePostParams struct {
 	Body     string      `json:"body"`
 }
 
-func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, error) {
+type CreatePostRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	AuthorID  pgtype.UUID        `json:"author_id"`
+	Body      string             `json:"body"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (CreatePostRow, error) {
 	row := q.db.QueryRow(ctx, createPost, arg.AuthorID, arg.Body)
-	var i Post
+	var i CreatePostRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorID,
+		&i.Body,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createPostWithMeta = `-- name: CreatePostWithMeta :one
+INSERT INTO posts (id, author_id, body, media_count, has_location)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, author_id, body, created_at
+`
+
+type CreatePostWithMetaParams struct {
+	ID          pgtype.UUID `json:"id"`
+	AuthorID    pgtype.UUID `json:"author_id"`
+	Body        string      `json:"body"`
+	MediaCount  int16       `json:"media_count"`
+	HasLocation bool        `json:"has_location"`
+}
+
+type CreatePostWithMetaRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	AuthorID  pgtype.UUID        `json:"author_id"`
+	Body      string             `json:"body"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Create a post with a caller-supplied id (so media files can be written under
+// it before the row is committed) and the denormalized media/location flags.
+func (q *Queries) CreatePostWithMeta(ctx context.Context, arg CreatePostWithMetaParams) (CreatePostWithMetaRow, error) {
+	row := q.db.QueryRow(ctx, createPostWithMeta,
+		arg.ID,
+		arg.AuthorID,
+		arg.Body,
+		arg.MediaCount,
+		arg.HasLocation,
+	)
+	var i CreatePostWithMetaRow
 	err := row.Scan(
 		&i.ID,
 		&i.AuthorID,
@@ -66,6 +178,153 @@ func (q *Queries) LikePost(ctx context.Context, arg LikePostParams) error {
 	return err
 }
 
+const listActiveStories = `-- name: ListActiveStories :many
+SELECT
+    s.id,
+    s.author_id,
+    u.display_name AS author_name,
+    u.avatar_url   AS author_avatar_url,
+    s.media_url,
+    s.created_at
+FROM stories s
+JOIN users u ON u.id = s.author_id
+WHERE s.expires_at > now()
+ORDER BY s.created_at DESC
+LIMIT $1
+`
+
+type ListActiveStoriesRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	AuthorName      *string            `json:"author_name"`
+	AuthorAvatarUrl *string            `json:"author_avatar_url"`
+	MediaUrl        string             `json:"media_url"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+// Non-expired stories with their author, newest first. The service groups these
+// by author into the story strip shown above the timeline.
+func (q *Queries) ListActiveStories(ctx context.Context, lim int32) ([]ListActiveStoriesRow, error) {
+	rows, err := q.db.Query(ctx, listActiveStories, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActiveStoriesRow
+	for rows.Next() {
+		var i ListActiveStoriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorID,
+			&i.AuthorName,
+			&i.AuthorAvatarUrl,
+			&i.MediaUrl,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGlobalTimeline = `-- name: ListGlobalTimeline :many
+SELECT
+    p.id,
+    p.author_id,
+    u.display_name AS author_name,
+    u.avatar_url   AS author_avatar_url,
+    p.body,
+    p.created_at,
+    (SELECT count(*) FROM post_likes l WHERE l.post_id = p.id)  AS like_count,
+    (SELECT count(*) FROM comments c   WHERE c.post_id = p.id)  AS comment_count,
+    EXISTS (
+        SELECT 1 FROM post_likes l
+        WHERE l.post_id = p.id AND l.user_id = $1
+    ) AS liked_by_viewer,
+    ARRAY(
+        SELECT m.media_url FROM post_media m
+        WHERE m.post_id = p.id AND m.media_type = 'image'
+        ORDER BY m.media_order
+    )::text[] AS image_urls,
+    COALESCE((
+        SELECT m.media_url FROM post_media m
+        WHERE m.post_id = p.id AND m.media_type = 'video'
+        ORDER BY m.media_order LIMIT 1
+    ), '')::text AS video_url,
+    loc.latitude      AS loc_latitude,
+    loc.longitude     AS loc_longitude,
+    loc.location_name AS loc_name
+FROM posts p
+JOIN users u ON u.id = p.author_id
+LEFT JOIN post_locations loc ON loc.post_id = p.id
+ORDER BY p.created_at DESC
+LIMIT $3 OFFSET $2
+`
+
+type ListGlobalTimelineParams struct {
+	ViewerID pgtype.UUID `json:"viewer_id"`
+	Off      int32       `json:"off"`
+	Lim      int32       `json:"lim"`
+}
+
+type ListGlobalTimelineRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	AuthorName      *string            `json:"author_name"`
+	AuthorAvatarUrl *string            `json:"author_avatar_url"`
+	Body            string             `json:"body"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	LikeCount       int64              `json:"like_count"`
+	CommentCount    int64              `json:"comment_count"`
+	LikedByViewer   bool               `json:"liked_by_viewer"`
+	ImageUrls       []string           `json:"image_urls"`
+	VideoUrl        string             `json:"video_url"`
+	LocLatitude     *float64           `json:"loc_latitude"`
+	LocLongitude    *float64           `json:"loc_longitude"`
+	LocName         *string            `json:"loc_name"`
+}
+
+// Discovery timeline: the most recent posts from everyone. Used as a fallback
+// when a viewer follows no one yet, so the home feed is never empty.
+func (q *Queries) ListGlobalTimeline(ctx context.Context, arg ListGlobalTimelineParams) ([]ListGlobalTimelineRow, error) {
+	rows, err := q.db.Query(ctx, listGlobalTimeline, arg.ViewerID, arg.Off, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGlobalTimelineRow
+	for rows.Next() {
+		var i ListGlobalTimelineRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorID,
+			&i.AuthorName,
+			&i.AuthorAvatarUrl,
+			&i.Body,
+			&i.CreatedAt,
+			&i.LikeCount,
+			&i.CommentCount,
+			&i.LikedByViewer,
+			&i.ImageUrls,
+			&i.VideoUrl,
+			&i.LocLatitude,
+			&i.LocLongitude,
+			&i.LocName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listHomeTimeline = `-- name: ListHomeTimeline :many
 SELECT
     p.id,
@@ -75,9 +334,27 @@ SELECT
     p.body,
     p.created_at,
     (SELECT count(*) FROM post_likes l WHERE l.post_id = p.id)  AS like_count,
-    (SELECT count(*) FROM comments c   WHERE c.post_id = p.id)  AS comment_count
+    (SELECT count(*) FROM comments c   WHERE c.post_id = p.id)  AS comment_count,
+    EXISTS (
+        SELECT 1 FROM post_likes l
+        WHERE l.post_id = p.id AND l.user_id = $1
+    ) AS liked_by_viewer,
+    ARRAY(
+        SELECT m.media_url FROM post_media m
+        WHERE m.post_id = p.id AND m.media_type = 'image'
+        ORDER BY m.media_order
+    )::text[] AS image_urls,
+    COALESCE((
+        SELECT m.media_url FROM post_media m
+        WHERE m.post_id = p.id AND m.media_type = 'video'
+        ORDER BY m.media_order LIMIT 1
+    ), '')::text AS video_url,
+    loc.latitude      AS loc_latitude,
+    loc.longitude     AS loc_longitude,
+    loc.location_name AS loc_name
 FROM posts p
 JOIN users u ON u.id = p.author_id
+LEFT JOIN post_locations loc ON loc.post_id = p.id
 WHERE p.author_id = $1
    OR p.author_id IN (
         SELECT followee_id FROM follows WHERE follower_id = $1
@@ -101,9 +378,17 @@ type ListHomeTimelineRow struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	LikeCount       int64              `json:"like_count"`
 	CommentCount    int64              `json:"comment_count"`
+	LikedByViewer   bool               `json:"liked_by_viewer"`
+	ImageUrls       []string           `json:"image_urls"`
+	VideoUrl        string             `json:"video_url"`
+	LocLatitude     *float64           `json:"loc_latitude"`
+	LocLongitude    *float64           `json:"loc_longitude"`
+	LocName         *string            `json:"loc_name"`
 }
 
 // Fan-out-on-read timeline: posts by the viewer and everyone they follow.
+// Each row carries its author, denormalized counts, the viewer's like state,
+// image URLs (ordered), an optional video URL, and an optional location.
 func (q *Queries) ListHomeTimeline(ctx context.Context, arg ListHomeTimelineParams) ([]ListHomeTimelineRow, error) {
 	rows, err := q.db.Query(ctx, listHomeTimeline, arg.ViewerID, arg.Off, arg.Lim)
 	if err != nil {
@@ -122,6 +407,12 @@ func (q *Queries) ListHomeTimeline(ctx context.Context, arg ListHomeTimelinePara
 			&i.CreatedAt,
 			&i.LikeCount,
 			&i.CommentCount,
+			&i.LikedByViewer,
+			&i.ImageUrls,
+			&i.VideoUrl,
+			&i.LocLatitude,
+			&i.LocLongitude,
+			&i.LocName,
 		); err != nil {
 			return nil, err
 		}
@@ -131,4 +422,18 @@ func (q *Queries) ListHomeTimeline(ctx context.Context, arg ListHomeTimelinePara
 		return nil, err
 	}
 	return items, nil
+}
+
+const unlikePost = `-- name: UnlikePost :exec
+DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2
+`
+
+type UnlikePostParams struct {
+	PostID pgtype.UUID `json:"post_id"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) UnlikePost(ctx context.Context, arg UnlikePostParams) error {
+	_, err := q.db.Exec(ctx, unlikePost, arg.PostID, arg.UserID)
+	return err
 }

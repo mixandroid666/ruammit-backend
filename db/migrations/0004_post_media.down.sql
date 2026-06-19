@@ -1,0 +1,4 @@
+ALTER TABLE posts DROP COLUMN IF EXISTS has_location;
+ALTER TABLE posts DROP COLUMN IF EXISTS media_count;
+DROP TABLE IF EXISTS post_locations;
+DROP TABLE IF EXISTS post_media;

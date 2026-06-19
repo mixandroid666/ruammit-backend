@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"ruammit-backend/internal/auth"
+	"ruammit-backend/internal/feed"
 	"ruammit-backend/internal/platform/config"
 	"ruammit-backend/internal/platform/httpx"
+	"ruammit-backend/internal/platform/mediastore"
 	"ruammit-backend/internal/platform/storage"
+	"ruammit-backend/internal/user"
 )
 
 // New builds the configured *http.Server, ready to ListenAndServe.
@@ -49,8 +52,23 @@ func registerRoutes(mux *http.ServeMux, cfg config.Config, log *slog.Logger, db 
 	authSvc := auth.NewService(db, cfg, log, otpSender(cfg, log))
 	auth.NewHandler(authSvc, log).RegisterRoutes(mux)
 
+	// Local media storage + a static route to serve uploaded post media.
+	mediaStore := mediastore.NewLocal(cfg.UploadDir, cfg.MediaURLPrefix)
+	fileServer := http.FileServer(http.Dir(cfg.UploadDir))
+	mux.Handle("GET "+cfg.MediaURLPrefix+"/",
+		http.StripPrefix(cfg.MediaURLPrefix+"/", fileServer))
+
+	// Feed: home timeline, stories, likes and post creation. Routes are
+	// protected by the shared auth middleware (the viewer id comes from the
+	// access token).
+	feedSvc := feed.NewService(db, mediaStore, log)
+	feed.NewHandler(feedSvc, authSvc, log).RegisterRoutes(mux)
+
+	// User: profile read/update (the profile-setup screen after OTP verify).
+	userSvc := user.NewService(db, mediaStore, log)
+	user.NewHandler(userSvc, authSvc, log).RegisterRoutes(mux)
+
 	// TODO: mount remaining feature modules, e.g.
-	//   feed.RegisterRoutes(mux, feedService)
 	//   location.RegisterRoutes(mux, locationService)
 	//   chat.RegisterRoutes(mux, chatHub)
 }

@@ -65,10 +65,6 @@ type challengeResponse struct {
 	DebugCode string `json:"debug_code,omitempty"`
 }
 
-type messageResponse struct {
-	Message string `json:"message"`
-}
-
 type loginRequest struct {
 	ContactType string `json:"contact_type"` // "email" | "phone"
 	Contact     string `json:"contact"`
@@ -80,7 +76,8 @@ type refreshRequest struct {
 }
 
 type userPayload struct {
-	ID string `json:"id"`
+	ID               string `json:"id"`
+	ProfileCompleted bool   `json:"profile_completed"`
 }
 
 type tokenResponse struct {
@@ -135,11 +132,14 @@ func (h *Handler) verifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.VerifyOTP(r.Context(), VerifyInput{Type: ct, Contact: contact, Code: req.Code}); err != nil {
+	pair, err := h.svc.VerifyOTP(r.Context(), VerifyInput{Type: ct, Contact: contact, Code: req.Code})
+	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, messageResponse{Message: "Account verified. You can now log in."})
+	// Verification logs the user in: return the token pair so the client can
+	// proceed straight to profile setup.
+	httpx.JSON(w, http.StatusOK, tokenResponseOf(pair))
 }
 
 func (h *Handler) resendOTP(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +234,7 @@ func tokenResponseOf(p *TokenPair) tokenResponse {
 		ExpiresAt:        p.AccessExpiresAt,
 		RefreshToken:     p.RefreshToken,
 		RefreshExpiresAt: p.RefreshExpiresAt,
-		User:             userPayload{ID: p.UserID},
+		User:             userPayload{ID: p.UserID, ProfileCompleted: p.ProfileCompleted},
 	}
 }
 
