@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -19,12 +20,14 @@ import (
 var ErrInvalidPostID = errors.New("invalid post id")
 
 // Upload limits enforced by the handler.
+// Images arrive pre-compressed (WebP ≤ 80 % quality, ≤ 1080 px) so 3 MB is a
+// generous server-side hard cap; the client-side limit is 20 MB pre-compression.
 const (
-	maxImageBytes      = 5 << 20  // 5 MB per image
-	maxVideoBytes      = 50 << 20 // 50 MB for the single video
+	maxImageBytes      = 3 << 20  // 3 MB per image (post-compression server guard)
+	maxVideoBytes      = 50 << 20 // 50 MB per video
 	maxMultipartMemory = 16 << 20 // keep up to 16 MB in memory; spill the rest to disk
 	// Hard cap on the whole request body, with headroom for field/boundary overhead.
-	maxRequestBytes = maxVideoBytes + (MaxImages * maxImageBytes) + (4 << 20)
+	maxRequestBytes = (MaxVideos * maxVideoBytes) + (MaxImages * maxImageBytes) + (4 << 20)
 )
 
 // Handler exposes the feed HTTP endpoints. All routes are authenticated; the
@@ -51,6 +54,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/users/{id}/posts", h.protected(h.userPosts))
 	mux.Handle("POST /api/v1/stories", h.protected(h.createStory))
 	mux.Handle("DELETE /api/v1/stories/{id}", h.protected(h.deleteStory))
+	mux.Handle("GET /api/v1/posts/{id}/comments", h.protected(h.listComments))
+	mux.Handle("POST /api/v1/posts/{id}/comments", h.protected(h.createComment))
+	mux.Handle("DELETE /api/v1/comments/{id}", h.protected(h.deleteComment))
+	mux.Handle("PUT /api/v1/comments/{id}/like", h.protected(h.likeComment))
+	mux.Handle("DELETE /api/v1/comments/{id}/like", h.protected(h.unlikeComment))
 }
 
 func (h *Handler) protected(fn http.HandlerFunc) http.Handler {
@@ -118,6 +126,27 @@ type createStoryResponse struct {
 	MediaURL  string    `json:"media_url"`
 	MediaType string    `json:"media_type"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type commentDTO struct {
+	ID              string    `json:"id"`
+	AuthorID        string    `json:"author_id"`
+	AuthorName      string    `json:"author_name"`
+	AuthorAvatarURL string    `json:"author_avatar_url"`
+	Body            string    `json:"body"`
+	CreatedAt       time.Time `json:"created_at"`
+	LikeCount       int64     `json:"like_count"`
+	LikedByViewer   bool      `json:"liked_by_viewer"`
+}
+
+type commentsResponse struct {
+	Comments   []commentDTO `json:"comments"`
+	NextOffset *int32       `json:"next_offset"`
+}
+
+type createCommentResponse struct {
+	Comment    commentDTO `json:"comment"`
+	TotalCount int64      `json:"total_count"`
 }
 
 // --- handlers --------------------------------------------------------------
@@ -225,8 +254,8 @@ func (h *Handler) setLike(w http.ResponseWriter, r *http.Request, liked bool) {
 }
 
 // create handles POST /api/v1/posts/create — a multipart/form-data request with
-// a caption, optional images[] (up to 8) OR a single video, and an optional
-// location (latitude, longitude, location_name).
+// a caption, optional images[] (up to 8), an optional single video (both may
+// be present simultaneously), and an optional location.
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	viewerID, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -279,14 +308,9 @@ func (h *Handler) parseCreateInput(w http.ResponseWriter, r *http.Request) (*Cre
 			"A post can have at most 8 images.")
 		return nil, false
 	}
-	if len(videoHeaders) > 0 && len(imageHeaders) > 0 {
-		httpx.Error(w, http.StatusBadRequest, "images_and_video",
-			"A post can have images or one video, not both.")
-		return nil, false
-	}
-	if len(videoHeaders) > 1 {
+	if len(videoHeaders) > MaxVideos {
 		httpx.Error(w, http.StatusBadRequest, "too_many_videos",
-			"A post can have at most one video.")
+			"A post can have at most 3 videos.")
 		return nil, false
 	}
 
@@ -304,9 +328,8 @@ func (h *Handler) parseCreateInput(w http.ResponseWriter, r *http.Request) (*Cre
 		in.Images = append(in.Images, NewMedia{Type: "image", Ext: ext, Data: data})
 	}
 
-	if len(videoHeaders) == 1 {
-		fh := videoHeaders[0]
-		data, ok := readUpload(w, fh, maxVideoBytes, "The video")
+	for _, fh := range videoHeaders {
+		data, ok := readUpload(w, fh, maxVideoBytes, "A video")
 		if !ok {
 			return nil, false
 		}
@@ -316,7 +339,7 @@ func (h *Handler) parseCreateInput(w http.ResponseWriter, r *http.Request) (*Cre
 				"Videos must be MP4 or MOV.")
 			return nil, false
 		}
-		in.Video = &NewMedia{Type: "video", Ext: ext, Data: data}
+		in.Videos = append(in.Videos, NewMedia{Type: "video", Ext: ext, Data: data})
 	}
 
 	loc, ok := parseLocation(w, r)
@@ -330,7 +353,7 @@ func (h *Handler) parseCreateInput(w http.ResponseWriter, r *http.Request) (*Cre
 			"Caption must be 2000 characters or fewer.")
 		return nil, false
 	}
-	if strings.TrimSpace(in.Caption) == "" && len(in.Images) == 0 && in.Video == nil {
+	if strings.TrimSpace(in.Caption) == "" && len(in.Images) == 0 && len(in.Videos) == 0 {
 		httpx.Error(w, http.StatusBadRequest, "empty_post",
 			"Add a caption or some media before posting.")
 		return nil, false
@@ -513,6 +536,132 @@ func (h *Handler) deleteStory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// listComments handles GET /api/v1/posts/{id}/comments
+func (h *Handler) listComments(w http.ResponseWriter, r *http.Request) {
+	viewerID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+	postID := r.PathValue("id")
+	limit := queryInt(r, "limit", 50)
+	offset := queryInt(r, "offset", 0)
+
+	comments, err := h.svc.Comments(r.Context(), postID, viewerID, limit, offset)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	dtos := make([]commentDTO, 0, len(comments))
+	for _, c := range comments {
+		dtos = append(dtos, commentDTO{
+			ID:              c.ID,
+			AuthorID:        c.AuthorID,
+			AuthorName:      c.AuthorName,
+			AuthorAvatarURL: c.AuthorAvatarURL,
+			Body:            c.Body,
+			CreatedAt:       c.CreatedAt,
+			LikeCount:       c.LikeCount,
+			LikedByViewer:   c.LikedByViewer,
+		})
+	}
+
+	httpx.JSON(w, http.StatusOK, commentsResponse{
+		Comments:   dtos,
+		NextOffset: nextOffset(int32(offset), int32(limit), len(comments)),
+	})
+}
+
+// createComment handles POST /api/v1/posts/{id}/comments
+func (h *Handler) createComment(w http.ResponseWriter, r *http.Request) {
+	viewerID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+	postID := r.PathValue("id")
+
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid_request", "expected JSON body")
+		return
+	}
+	if body.Body == "" {
+		httpx.Error(w, http.StatusBadRequest, "missing_body", "body is required")
+		return
+	}
+
+	comment, err := h.svc.CreateComment(r.Context(), postID, viewerID, body.Body)
+	if err != nil {
+		h.log.Error("create comment", "err", err)
+		h.writeServiceError(w, err)
+		return
+	}
+
+	total, err := h.svc.CountComments(r.Context(), postID)
+	if err != nil {
+		total = 0
+	}
+
+	httpx.JSON(w, http.StatusCreated, createCommentResponse{
+		Comment: commentDTO{
+			ID:              comment.ID,
+			AuthorID:        comment.AuthorID,
+			AuthorName:      comment.AuthorName,
+			AuthorAvatarURL: comment.AuthorAvatarURL,
+			Body:            comment.Body,
+			CreatedAt:       comment.CreatedAt,
+		},
+		TotalCount: total,
+	})
+}
+
+// deleteComment handles DELETE /api/v1/comments/{id}
+func (h *Handler) deleteComment(w http.ResponseWriter, r *http.Request) {
+	viewerID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+	commentID := r.PathValue("id")
+	if err := h.svc.DeleteComment(r.Context(), commentID, viewerID); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) likeComment(w http.ResponseWriter, r *http.Request) {
+	h.setCommentLike(w, r, true)
+}
+
+func (h *Handler) unlikeComment(w http.ResponseWriter, r *http.Request) {
+	h.setCommentLike(w, r, false)
+}
+
+func (h *Handler) setCommentLike(w http.ResponseWriter, r *http.Request, liked bool) {
+	viewerID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+	commentID := r.PathValue("id")
+	var err error
+	if liked {
+		err = h.svc.LikeComment(r.Context(), commentID, viewerID)
+	} else {
+		err = h.svc.UnlikeComment(r.Context(), commentID, viewerID)
+	}
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func postDTOOf(p Post) postDTO {
@@ -573,6 +722,8 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 		httpx.Error(w, http.StatusBadRequest, "empty_post", "Add a caption or some media before posting.")
 	case errors.Is(err, ErrTooManyImages):
 		httpx.Error(w, http.StatusBadRequest, "too_many_images", "A post can have at most 8 images.")
+	case errors.Is(err, ErrTooManyVideos):
+		httpx.Error(w, http.StatusBadRequest, "too_many_videos", "A post can have at most 3 videos.")
 	case errors.Is(err, ErrImagesAndVideo):
 		httpx.Error(w, http.StatusBadRequest, "images_and_video", "A post can have images or one video, not both.")
 	case errors.Is(err, ErrInvalidLocation):

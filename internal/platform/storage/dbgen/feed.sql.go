@@ -91,6 +91,42 @@ func (q *Queries) AddPostMedia(ctx context.Context, arg AddPostMediaParams) (Pos
 	return i, err
 }
 
+const countComments = `-- name: CountComments :one
+SELECT count(*) FROM comments WHERE post_id = $1
+`
+
+func (q *Queries) CountComments(ctx context.Context, postID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countComments, postID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createComment = `-- name: CreateComment :one
+INSERT INTO comments (post_id, author_id, body)
+VALUES ($1, $2, $3)
+RETURNING id, post_id, author_id, body, created_at
+`
+
+type CreateCommentParams struct {
+	PostID   pgtype.UUID `json:"post_id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+	Body     string      `json:"body"`
+}
+
+func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, createComment, arg.PostID, arg.AuthorID, arg.Body)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.PostID,
+		&i.AuthorID,
+		&i.Body,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createPost = `-- name: CreatePost :one
 INSERT INTO posts (author_id, body)
 VALUES ($1, $2)
@@ -197,6 +233,20 @@ func (q *Queries) CreateStory(ctx context.Context, arg CreateStoryParams) (Creat
 	return i, err
 }
 
+const deleteOwnComment = `-- name: DeleteOwnComment :exec
+DELETE FROM comments WHERE id = $1 AND author_id = $2
+`
+
+type DeleteOwnCommentParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+}
+
+func (q *Queries) DeleteOwnComment(ctx context.Context, arg DeleteOwnCommentParams) error {
+	_, err := q.db.Exec(ctx, deleteOwnComment, arg.ID, arg.AuthorID)
+	return err
+}
+
 const deleteOwnStory = `-- name: DeleteOwnStory :exec
 DELETE FROM stories WHERE id = $1 AND author_id = $2
 `
@@ -208,6 +258,22 @@ type DeleteOwnStoryParams struct {
 
 func (q *Queries) DeleteOwnStory(ctx context.Context, arg DeleteOwnStoryParams) error {
 	_, err := q.db.Exec(ctx, deleteOwnStory, arg.ID, arg.AuthorID)
+	return err
+}
+
+const likeComment = `-- name: LikeComment :exec
+INSERT INTO comment_likes (comment_id, user_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type LikeCommentParams struct {
+	CommentID pgtype.UUID `json:"comment_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) LikeComment(ctx context.Context, arg LikeCommentParams) error {
+	_, err := q.db.Exec(ctx, likeComment, arg.CommentID, arg.UserID)
 	return err
 }
 
@@ -272,6 +338,81 @@ func (q *Queries) ListActiveStories(ctx context.Context, lim int32) ([]ListActiv
 			&i.MediaUrl,
 			&i.MediaType,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listComments = `-- name: ListComments :many
+SELECT
+    c.id,
+    c.post_id,
+    c.author_id,
+    u.display_name AS author_name,
+    u.avatar_url   AS author_avatar_url,
+    c.body,
+    c.created_at,
+    (SELECT count(*) FROM comment_likes cl WHERE cl.comment_id = c.id) AS like_count,
+    EXISTS (
+        SELECT 1 FROM comment_likes cl
+        WHERE cl.comment_id = c.id AND cl.user_id = $1
+    ) AS liked_by_viewer
+FROM comments c
+JOIN users u ON u.id = c.author_id
+WHERE c.post_id = $2
+ORDER BY c.created_at DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListCommentsParams struct {
+	ViewerID pgtype.UUID `json:"viewer_id"`
+	PostID   pgtype.UUID `json:"post_id"`
+	Off      int32       `json:"off"`
+	Lim      int32       `json:"lim"`
+}
+
+type ListCommentsRow struct {
+	ID              pgtype.UUID        `json:"id"`
+	PostID          pgtype.UUID        `json:"post_id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	AuthorName      *string            `json:"author_name"`
+	AuthorAvatarUrl *string            `json:"author_avatar_url"`
+	Body            string             `json:"body"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	LikeCount       int64              `json:"like_count"`
+	LikedByViewer   bool               `json:"liked_by_viewer"`
+}
+
+func (q *Queries) ListComments(ctx context.Context, arg ListCommentsParams) ([]ListCommentsRow, error) {
+	rows, err := q.db.Query(ctx, listComments,
+		arg.ViewerID,
+		arg.PostID,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommentsRow
+	for rows.Next() {
+		var i ListCommentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PostID,
+			&i.AuthorID,
+			&i.AuthorName,
+			&i.AuthorAvatarUrl,
+			&i.Body,
+			&i.CreatedAt,
+			&i.LikeCount,
+			&i.LikedByViewer,
 		); err != nil {
 			return nil, err
 		}
@@ -574,6 +715,20 @@ func (q *Queries) ListUserPosts(ctx context.Context, arg ListUserPostsParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const unlikeComment = `-- name: UnlikeComment :exec
+DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2
+`
+
+type UnlikeCommentParams struct {
+	CommentID pgtype.UUID `json:"comment_id"`
+	UserID    pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) UnlikeComment(ctx context.Context, arg UnlikeCommentParams) error {
+	_, err := q.db.Exec(ctx, unlikeComment, arg.CommentID, arg.UserID)
+	return err
 }
 
 const unlikePost = `-- name: UnlikePost :exec

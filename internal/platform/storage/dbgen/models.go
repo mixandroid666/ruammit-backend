@@ -16,6 +16,12 @@ type Comment struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type CommentLike struct {
+	CommentID pgtype.UUID        `json:"comment_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Conversation struct {
 	ID        pgtype.UUID        `json:"id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`

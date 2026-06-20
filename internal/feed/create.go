@@ -19,6 +19,7 @@ import (
 const (
 	MaxCaptionLen = 2000
 	MaxImages     = 8
+	MaxVideos     = 3
 )
 
 // Domain errors for post creation. The handler maps these to HTTP status codes.
@@ -26,6 +27,7 @@ var (
 	ErrCaptionTooLong  = errors.New("caption exceeds the maximum length")
 	ErrEmptyPost       = errors.New("a post needs a caption or media")
 	ErrTooManyImages   = errors.New("too many images")
+	ErrTooManyVideos   = errors.New("too many videos")
 	ErrImagesAndVideo  = errors.New("a post can have images or one video, not both")
 	ErrInvalidLocation = errors.New("invalid location coordinates")
 	ErrRateLimited     = errors.New("posting too quickly")
@@ -49,7 +51,7 @@ type NewLocation struct {
 type CreatePostInput struct {
 	Caption  string
 	Images   []NewMedia
-	Video    *NewMedia
+	Videos   []NewMedia
 	Location *NewLocation
 }
 
@@ -69,10 +71,10 @@ func (s *Service) CreatePost(ctx context.Context, authorID string, in CreatePost
 	if len(in.Images) > MaxImages {
 		return nil, ErrTooManyImages
 	}
-	if in.Video != nil && len(in.Images) > 0 {
-		return nil, ErrImagesAndVideo
+	if len(in.Videos) > MaxVideos {
+		return nil, ErrTooManyVideos
 	}
-	hasMedia := in.Video != nil || len(in.Images) > 0
+	hasMedia := len(in.Videos) > 0 || len(in.Images) > 0
 	if caption == "" && !hasMedia {
 		return nil, ErrEmptyPost
 	}
@@ -175,7 +177,7 @@ func (s *Service) CreatePost(ctx context.Context, authorID string, in CreatePost
 // storeMedia writes each upload to the media store and returns the resulting
 // PostMedia entries (URLs filled, IDs assigned later after the DB insert).
 func (s *Service) storeMedia(prefix string, in CreatePostInput) ([]PostMedia, error) {
-	media := make([]PostMedia, 0, len(in.Images)+1)
+	media := make([]PostMedia, 0, len(in.Images)+len(in.Videos))
 	for i := range in.Images {
 		order := i + 1
 		key := fmt.Sprintf("%s/image_%d%s", prefix, order, in.Images[i].Ext)
@@ -185,13 +187,14 @@ func (s *Service) storeMedia(prefix string, in CreatePostInput) ([]PostMedia, er
 		}
 		media = append(media, PostMedia{Type: "image", URL: url, Order: order})
 	}
-	if in.Video != nil {
-		key := fmt.Sprintf("%s/video%s", prefix, in.Video.Ext)
-		url, err := s.media.Save(key, bytes.NewReader(in.Video.Data))
+	for i := range in.Videos {
+		order := len(in.Images) + i + 1
+		key := fmt.Sprintf("%s/video_%d%s", prefix, i+1, in.Videos[i].Ext)
+		url, err := s.media.Save(key, bytes.NewReader(in.Videos[i].Data))
 		if err != nil {
 			return nil, fmt.Errorf("save video: %w", err)
 		}
-		media = append(media, PostMedia{Type: "video", URL: url, Order: 1})
+		media = append(media, PostMedia{Type: "video", URL: url, Order: order})
 	}
 	return media, nil
 }

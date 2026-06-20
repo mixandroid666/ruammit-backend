@@ -355,6 +355,145 @@ func (s *Service) DeleteStory(ctx context.Context, storyID, authorID string) err
 	return s.db.Queries.DeleteOwnStory(ctx, dbgen.DeleteOwnStoryParams{ID: story, AuthorID: author})
 }
 
+// --- comments --------------------------------------------------------------
+
+// Comment is a single comment on a post.
+type Comment struct {
+	ID              string
+	PostID          string
+	AuthorID        string
+	AuthorName      string
+	AuthorAvatarURL string
+	Body            string
+	CreatedAt       time.Time
+	LikeCount       int64
+	LikedByViewer   bool
+}
+
+// Comments returns a page of comments for a post, oldest first.
+func (s *Service) Comments(ctx context.Context, postID, viewerID string, limit, offset int32) ([]Comment, error) {
+	pid, err := parseUUID(postID)
+	if err != nil {
+		return nil, err
+	}
+	viewer, err := parseUUID(viewerID)
+	if err != nil {
+		return nil, err
+	}
+	limit = clampLimit(limit)
+	rows, err := s.db.Queries.ListComments(ctx, dbgen.ListCommentsParams{
+		PostID:   pid,
+		ViewerID: viewer,
+		Lim:      limit,
+		Off:      offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Comment, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Comment{
+			ID:              uuidString(r.ID),
+			PostID:          uuidString(r.PostID),
+			AuthorID:        uuidString(r.AuthorID),
+			AuthorName:      deref(r.AuthorName),
+			AuthorAvatarURL: deref(r.AuthorAvatarUrl),
+			Body:            r.Body,
+			CreatedAt:       r.CreatedAt.Time,
+			LikeCount:       r.LikeCount,
+			LikedByViewer:   r.LikedByViewer,
+		})
+	}
+	return out, nil
+}
+
+// CreateComment adds a comment on a post and returns the created comment.
+func (s *Service) CreateComment(ctx context.Context, postID, authorID, body string) (*Comment, error) {
+	if body == "" {
+		return nil, fmt.Errorf("body is required")
+	}
+	pid, err := parseUUID(postID)
+	if err != nil {
+		return nil, err
+	}
+	aid, err := parseUUID(authorID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := s.db.Queries.CreateComment(ctx, dbgen.CreateCommentParams{
+		PostID:   pid,
+		AuthorID: aid,
+		Body:     body,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	user, _ := s.db.Queries.GetUserByID(ctx, aid)
+
+	return &Comment{
+		ID:              uuidString(row.ID),
+		PostID:          uuidString(row.PostID),
+		AuthorID:        uuidString(row.AuthorID),
+		AuthorName:      deref(user.DisplayName),
+		AuthorAvatarURL: deref(user.AvatarUrl),
+		Body:            row.Body,
+		CreatedAt:       row.CreatedAt.Time,
+	}, nil
+}
+
+// DeleteComment deletes the caller's own comment.
+func (s *Service) DeleteComment(ctx context.Context, commentID, authorID string) error {
+	cid, err := parseUUID(commentID)
+	if err != nil {
+		return err
+	}
+	aid, err := parseUUID(authorID)
+	if err != nil {
+		return err
+	}
+	return s.db.Queries.DeleteOwnComment(ctx, dbgen.DeleteOwnCommentParams{ID: cid, AuthorID: aid})
+}
+
+// CountComments returns the total number of comments on a post.
+func (s *Service) CountComments(ctx context.Context, postID string) (int64, error) {
+	pid, err := parseUUID(postID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.db.Queries.CountComments(ctx, pid)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// LikeComment records a like on a comment (idempotent).
+func (s *Service) LikeComment(ctx context.Context, commentID, viewerID string) error {
+	cid, err := parseUUID(commentID)
+	if err != nil {
+		return ErrInvalidPostID
+	}
+	uid, err := parseUUID(viewerID)
+	if err != nil {
+		return ErrInvalidPostID
+	}
+	return s.db.Queries.LikeComment(ctx, dbgen.LikeCommentParams{CommentID: cid, UserID: uid})
+}
+
+// UnlikeComment removes a like from a comment (idempotent).
+func (s *Service) UnlikeComment(ctx context.Context, commentID, viewerID string) error {
+	cid, err := parseUUID(commentID)
+	if err != nil {
+		return ErrInvalidPostID
+	}
+	uid, err := parseUUID(viewerID)
+	if err != nil {
+		return ErrInvalidPostID
+	}
+	return s.db.Queries.UnlikeComment(ctx, dbgen.UnlikeCommentParams{CommentID: cid, UserID: uid})
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func clampLimit(limit int32) int32 {

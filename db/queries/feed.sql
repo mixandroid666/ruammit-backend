@@ -124,6 +124,45 @@ RETURNING id, author_id, media_url, media_type, created_at, expires_at;
 -- name: DeleteOwnStory :exec
 DELETE FROM stories WHERE id = $1 AND author_id = $2;
 
+-- name: ListComments :many
+SELECT
+    c.id,
+    c.post_id,
+    c.author_id,
+    u.display_name AS author_name,
+    u.avatar_url   AS author_avatar_url,
+    c.body,
+    c.created_at,
+    (SELECT count(*) FROM comment_likes cl WHERE cl.comment_id = c.id) AS like_count,
+    EXISTS (
+        SELECT 1 FROM comment_likes cl
+        WHERE cl.comment_id = c.id AND cl.user_id = sqlc.arg(viewer_id)
+    ) AS liked_by_viewer
+FROM comments c
+JOIN users u ON u.id = c.author_id
+WHERE c.post_id = sqlc.arg(post_id)
+ORDER BY c.created_at DESC
+LIMIT sqlc.arg(lim) OFFSET sqlc.arg(off);
+
+-- name: CreateComment :one
+INSERT INTO comments (post_id, author_id, body)
+VALUES ($1, $2, $3)
+RETURNING id, post_id, author_id, body, created_at;
+
+-- name: DeleteOwnComment :exec
+DELETE FROM comments WHERE id = $1 AND author_id = $2;
+
+-- name: CountComments :one
+SELECT count(*) FROM comments WHERE post_id = $1;
+
+-- name: LikeComment :exec
+INSERT INTO comment_likes (comment_id, user_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: UnlikeComment :exec
+DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2;
+
 -- name: ListUserPosts :many
 -- Posts by a specific author, with the viewer's like state for heart rendering.
 SELECT
