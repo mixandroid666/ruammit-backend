@@ -1,4 +1,4 @@
-﻿-- Initial schema for Waymeet. Covers users, social auth, the follow graph,
+-- Initial schema for Waymeet. Covers users, social auth, the follow graph,
 -- the feed (posts/images/likes/comments/stories), 1:1 chat, and push devices.
 
 CREATE EXTENSION IF NOT EXISTS postgis;   -- geospatial discovery (Location tab)
