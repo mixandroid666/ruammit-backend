@@ -39,34 +39,24 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `DROPLET_USER` | `deploy` |
 | `DROPLET_SSH_KEY` | contents of `~/.ssh/waymeet_ci` (the **private** key) |
 
-### 3. Let the Droplet pull from GitHub (deploy key)
-The Droplet needs read access to the repo. Add a **read-only deploy key**:
-```bash
-# on the Droplet:
-ssh deploy@159.223.46.94
-ssh-keygen -t ed25519 -f ~/.ssh/github_deploy -N ""
-cat ~/.ssh/github_deploy.pub          # copy this
-# add a host alias so git uses this key for github
-cat >> ~/.ssh/config <<'EOF'
-Host github.com
-  IdentityFile ~/.ssh/github_deploy
-  IdentitiesOnly yes
-EOF
-```
-GitHub repo → **Settings → Deploy keys → Add deploy key** → paste the public key
-(read-only is fine).
+### 3. Let the Droplet pull from GitHub
+The repo is **public**, so the Droplet clones over HTTPS with no credentials —
+nothing to do here. (If you ever make the repo private, add a read-only
+**Deploy key**: `ssh-keygen` on the Droplet, paste the public key under repo
+→ Settings → Deploy keys, and clone via the `git@github.com:` SSH URL.)
 
-### 4. Convert the Droplet to a git checkout (one time)
-The server currently holds a tarball copy. Replace it with a real clone while
-**preserving the live env file and secrets**:
+### 4. Convert the Droplet to a git checkout (one time) — ✅ DONE
+Already completed: `~/waymeet-backend` on the Droplet is now a git checkout
+(currently on `chore/cicd-setup`; the first deploy moves it to `main`). The live
+`deploy/.env.prod` and `deploy/secrets/fcm.json` were preserved, and a backup of
+the old tarball copy is at `~/waymeet-backend.bak` — delete it once the first
+real deploy succeeds. For reference, the steps were:
 ```bash
 # on the Droplet, in ~:
 mv waymeet-backend waymeet-backend.bak
-git clone git@github.com:mixandroid666/waymeet-backend.git
-cp waymeet-backend.bak/deploy/.env.prod      waymeet-backend/deploy/.env.prod
-cp -r waymeet-backend.bak/deploy/secrets/.   waymeet-backend/deploy/secrets/ 2>/dev/null || true
-# sanity check, then remove the backup once a deploy succeeds:
-ls waymeet-backend/deploy/.env.prod waymeet-backend/deploy/secrets/
+git clone https://github.com/mixandroid666/waymeet-backend.git
+cp    waymeet-backend.bak/deploy/.env.prod    waymeet-backend/deploy/.env.prod
+cp -r waymeet-backend.bak/deploy/secrets/.    waymeet-backend/deploy/secrets/
 ```
 
 ## Daily workflow after setup
