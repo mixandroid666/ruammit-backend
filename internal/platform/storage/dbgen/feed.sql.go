@@ -411,7 +411,6 @@ type ListCommentsRow struct {
 	AuthorAvatarUrl *string            `json:"author_avatar_url"`
 	Body            string             `json:"body"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	AspectRatio     float64            `json:"aspect_ratio"`
 	LikeCount       int64              `json:"like_count"`
 	LikedByViewer   bool               `json:"liked_by_viewer"`
 }
@@ -438,7 +437,6 @@ func (q *Queries) ListComments(ctx context.Context, arg ListCommentsParams) ([]L
 			&i.AuthorAvatarUrl,
 			&i.Body,
 			&i.CreatedAt,
-			&i.AspectRatio,
 			&i.LikeCount,
 			&i.LikedByViewer,
 		); err != nil {
