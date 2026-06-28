@@ -15,6 +15,7 @@ import (
 	"waymeet-backend/internal/auth"
 	"waymeet-backend/internal/chat"
 	"waymeet-backend/internal/feed"
+	"waymeet-backend/internal/location"
 	"waymeet-backend/internal/notification"
 	"waymeet-backend/internal/platform/config"
 	"waymeet-backend/internal/platform/httpx"
@@ -77,6 +78,10 @@ func registerRoutes(mux *http.ServeMux, cfg config.Config, log *slog.Logger, db 
 	// User: profile read/update (the profile-setup screen after OTP verify).
 	userSvc := user.NewService(db, mediaStore, log)
 	user.NewHandler(userSvc, authSvc, log).RegisterRoutes(mux)
+
+	// Location: update the viewer's position + nearby-people discovery (PostGIS).
+	locationSvc := location.NewService(db, log)
+	location.NewHandler(locationSvc, authSvc, log).RegisterRoutes(mux)
 
 	// Notifications: FCM push delivery + device token management.
 	notifySvc := notification.New(cfg.FCMCredentialsFile, db, log)
